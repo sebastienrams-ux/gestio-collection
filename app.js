@@ -129,10 +129,13 @@ function seriesCover(s) {
   if (s.cover) return s.cover;
   const eds = Object.values(s.editions || {}).find((e) => e.cover);
   if (eds) return eds.cover;
-  return covers[coverKey(s)] || null;
+  const c = covers[coverKey(s)];
+  return c && !c.startsWith("none") ? c : null;
 }
+// « rien trouvé » est retenu 30 jours, puis on réessaie (les bases s'enrichissent)
+const recentlyTried = (id) => { const c = covers[id]; return (typeof c === "string" && c.startsWith("none:") && Date.now() - Number(c.slice(5)) < 30 * 864e5); };
 function wantCover(s) {
-  if (seriesCover(s) || covers[coverKey(s)] === "" || !navigator.onLine) return;
+  if (seriesCover(s) || recentlyTried(s.id) || !navigator.onLine) return;
   if (!coverQueue.includes(s.id)) coverQueue.push(s.id);
   pumpCovers();
 }
@@ -141,25 +144,27 @@ async function pumpCovers() {
   while (coverQueue.length) {
     const id = coverQueue.shift();
     const s = db.series.find((x) => x.id === id);
-    if (!s || seriesCover(s) || covers[id] === "") continue;
+    if (!s || seriesCover(s) || recentlyTried(id)) continue;
     const first = numeric(s.possedes).sort((a, b) => a - b)[0];
     let cands = await searchBases(s.titre, first ?? null, s.editeur, 6).catch(() => null);
-    if (cands === null) break; // hors ligne ou quota : on réessaiera plus tard
+    if (cands === null) { coverQueue.unshift(id); break; } // hors ligne ou quota : on réessaiera plus tard
     let pick = cands.find((c) => c.cover && c.score > 1.2);
     if (!pick) { // deuxième essai : le nom de la série seul, avec l'éditeur
       cands = await searchBases(s.titre, null, s.editeur, 6, `intitle:${s.titre}${s.editeur ? ` inpublisher:${s.editeur.split(" ")[0]}` : ""}`).catch(() => null);
-      if (cands === null) break;
+      if (cands === null) { coverQueue.unshift(id); break; }
       pick = cands.find((c) => c.cover && c.score > 1.2);
     }
-    covers[id] = pick ? pick.cover : "";
+    covers[id] = pick ? pick.cover : `none:${Date.now()}`; // « rien trouvé » : on réessaiera dans 30 jours
     save(COVERS_KEY, covers);
     document.querySelectorAll(`[data-cover="${CSS.escape(id)}"]`).forEach((el) => paintCover(el, s));
     await new Promise((r) => setTimeout(r, 700));
   }
   coverBusy = false;
 }
+// Seules les images https et les photos prises dans l'appli sont affichées (pas d'adresse piégée venue d'un import).
+const safeImg = (u) => (typeof u === "string" && /^(https:\/\/|data:image\/(jpeg|png|webp);)/i.test(u) ? u : null);
 function paintCover(el, s) {
-  const url = seriesCover(s);
+  const url = safeImg(seriesCover(s));
   el.innerHTML = url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<svg class="ico"><use href="#${genreIcon(s.genre)}"/></svg>`;
 }
 const io = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
@@ -198,7 +203,8 @@ function rank(c, name, num, editeur) {
 }
 async function searchBases(name, num, editeur, max = 6, query) {
   const q = query || (num != null ? `${name} ${num}` : name);
-  const res = await Promise.allSettled([googleBooks(q, 8), openLibrary(q, 6)]);
+  const olq = num != null ? `${name} ${num}` : name; // la syntaxe intitle:/inpublisher: n'existe que chez Google
+  const res = await Promise.allSettled([googleBooks(q, 8), openLibrary(olq, 6)]);
   if (res.every((r) => r.status === "rejected")) throw new Error("offline");
   const all = res.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   const seen = new Set();
@@ -314,7 +320,7 @@ function detailList(s) {
     const owned = has(s, k);
     const info = ed ? [ed.editeur, ed.annee, ed.isbn && `ISBN ${ed.isbn}`].filter(Boolean).join(" · ") : "";
     return `<li class="drow${owned ? "" : " not"}"><span class="dnum">${esc(k)}</span>
-      <span>${ed?.cover ? `<img class="dcov" src="${esc(ed.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span>
+      <span>${safeImg(ed?.cover) ? `<img class="dcov" src="${esc(ed.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span>
       <span class="dtxt"><span>${esc(titre || ed?.titre || "")}</span>${info ? `<span class="hint">${esc(info)}</span>` : ""}</span>
       <span class="dst">${owned ? "✓" : ""}</span></li>`;
   }).join("");
@@ -347,7 +353,7 @@ function openSerie(id) {
     ${others.length ? `<div><div class="hint">Autres volumes</div><div class="extra">${others.map((o) => `<span class="tome have">${esc(o)}</span>`).join("")}</div></div>` : ""}
     ${detailList(s)}
     <div class="grid2">
-      <label class="field">Tomes parus (pour voir les manques au-delà)<input id="f-parus" type="number" min="0" inputmode="numeric" value="${s.parus || ""}"></label>
+      <label class="field">Tomes parus (pour voir les manques au-delà)<input id="f-parus" type="number" min="0" inputmode="numeric" value="${esc(s.parus || "")}"></label>
       <label class="field">Éditeur<input id="f-editeur" value="${esc(s.editeur)}"></label>
       <label class="field">Collection<input id="f-collection" value="${esc(s.collection)}"></label>
       <label class="field">Genre<select id="f-genre" class="field-select">${GENRES.map((g) => `<option${g.id === s.genre ? " selected" : ""}>${g.id}</option>`).join("")}</select></label>
@@ -436,7 +442,7 @@ function sortTomes(arr) {
 function candHtml(c, i) {
   return `<button class="cand${i === 0 ? " best" : ""}" data-i="${i}">
     ${i === 0 ? `<span class="badge">Meilleure</span>` : ""}
-    <span class="cimg">${c.cover ? `<img src="${esc(c.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<svg class="ico"><use href="#i-book"/></svg>`}</span>
+    <span class="cimg">${safeImg(c.cover) ? `<img src="${esc(c.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<svg class="ico"><use href="#i-book"/></svg>`}</span>
     <span class="t">${esc(c.titre || "Sans titre")}</span>
     <span class="s">${esc([c.editeur, c.annee].filter(Boolean).join(" · "))}</span>
     <span class="s">${esc(c.source)}</span></button>`;
