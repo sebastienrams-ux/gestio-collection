@@ -41,15 +41,57 @@ function similarity(a, b) {
   return Math.max(dice, cover * 0.95);
 }
 const NUM_WORDS = { un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, huit: 8, neuf: 9, dix: 10,
-  onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, "dix-sept": 17, "dix-huit": 18, "dix-neuf": 19, vingt: 20 };
-// « Elfes tome 19 » -> { name: "Elfes", num: 19 }
+  onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, vingt: 20, vingts: 20, trente: 30, quarante: 40,
+  cinquante: 50, soixante: 60, cent: 100, cents: 100 };
+const TENS = new Set([20, 30, 40, 50, 60]);
+const KEYWORDS = new Set(["tome", "tomes", "t", "n", "no", "numero", "numeros", "num", "volume", "volumes", "vol", "livre", "livres"]);
+const LINKS = new Set(["et", "a", "au", "&"]);
+// Un mot (ou « quatre-vingt-un ») est-il un nombre écrit en lettres ou en chiffres ?
+const isNumTok = (t) => /^\d{1,4}$/.test(t) || t.split("-").every((p) => p in NUM_WORDS || p === "et");
+// « tome vingt et un », « 3 et 4 », « tomes 1 à 4 » -> [21], [3, 4], [1, 2, 3, 4]
+function readNumbers(toks) {
+  const out = []; let cur = null, range = false;
+  const push = () => {
+    if (cur == null) return;
+    if (range && out.length) { const a = out[out.length - 1]; for (let i = a + 1; i <= cur && i - a < 200; i++) out.push(i); }
+    else out.push(cur);
+    cur = null; range = false;
+  };
+  const parts = toks.flatMap((t) => (/^\d+$/.test(t) ? [t] : t.split("-")));
+  parts.forEach((p, i) => {
+    if (/^\d+$/.test(p)) { push(); cur = Number(p); return; }
+    if (p === "et" || p === "&") {
+      if (cur != null && TENS.has(cur % 100) && /^(un|une|onze)$/.test(parts[i + 1] || "")) return; // vingt et un
+      push(); return;
+    }
+    if (p === "a" || p === "au") { push(); range = true; return; }
+    const v = NUM_WORDS[p];
+    if (v === 100) cur = (cur || 1) * 100;
+    else if (v === 20 && cur != null && cur % 100 === 4) cur += 76; // quatre-vingt
+    else cur = (cur || 0) + v;
+  });
+  push();
+  return out;
+}
+// « Elfes tome 19 » -> { name: "Elfes", num: 19, nums: [19] }
 function parseLine(line) {
-  let s = line.trim().replace(/[.,;]+$/, "");
+  const s = line.trim().replace(/[.,;]+$/, "");
   if (!s) return null;
-  s = s.replace(/\b(dix-sept|dix-huit|dix-neuf|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt)\s*$/i, (w) => NUM_WORDS[w.toLowerCase()]);
-  const m = s.match(/^(.*?)(?:[\s,–-]+(?:tome|tomes|t\.?|n°|no\.?|num[ée]ro|num|volume|vol\.?|#|livre))?[\s#]*(\d{1,4})\s*$/i);
-  if (m && m[1].trim()) return { name: m[1].trim().replace(/[\s,–-]+$/, ""), num: Number(m[2]) };
-  return { name: s, num: null };
+  const raw = s.split(/\s+/);
+  const low = raw.map((w) => norm(w.replace(/°/g, "")).replace(/ /g, "-"));
+  if (raw.length > 1 && /^(hc|hs|hors-serie|integrale)$/.test(low[low.length - 1])) {
+    const tag = { hc: "HC", hs: "HS", "hors-serie": "HS", integrale: "Intégrale" }[low[low.length - 1]];
+    return { name: raw.slice(0, -1).join(" ").replace(/[\s,–-]+$/, ""), num: tag, nums: [tag] };
+  }
+  let i = raw.length;
+  while (i > 0 && (isNumTok(low[i - 1]) || LINKS.has(low[i - 1]) || low[i - 1] === "")) i--;
+  while (i < raw.length && LINKS.has(low[i])) i++; // le nombre ne commence pas par « et »
+  const nums = i < raw.length && i > 0 ? readNumbers(low.slice(i)) : [];
+  if (!nums.length) return { name: s, num: null, nums: [] };
+  let j = i;
+  while (j > 1 && (KEYWORDS.has(low[j - 1]) || low[j - 1] === "")) j--;
+  const name = raw.slice(0, j).join(" ").replace(/[\s,–#-]+$/, "");
+  return name ? { name, num: nums[0], nums } : { name: s, num: null, nums: [] };
 }
 function bestSeries(name, n = 3) {
   return db.series.map((x) => ({ s: x, score: Math.max(similarity(name, x.titre), similarity(x.titre, name) * 0.9) }))
@@ -69,6 +111,13 @@ function missingOf(s) {
   return out;
 }
 const has = (s, num) => (s.possedes || []).some((x) => String(x) === String(num));
+const numLabel = (s, n) => (typeof n === "string" ? n : s.type === "fascicule" ? `n° ${n}` : `tome ${n}`);
+// [1,2,3,5,7,8] -> "1-3, 5, 7-8"
+function ranges(arr) {
+  const out = []; let i = 0;
+  while (i < arr.length) { let j = i; while (j + 1 < arr.length && arr[j + 1] === arr[j] + 1) j++; out.push(i === j ? `${arr[i]}` : `${arr[i]}-${arr[j]}`); i = j + 1; }
+  return out.join(", ");
+}
 
 // ---------- couvertures ----------
 const coverQueue = [];
@@ -165,13 +214,13 @@ function chips(el, current, onPick) {
     `<button class="chip" data-g="${esc(g)}" aria-pressed="${g === current}">${g === "Tout" ? "" : `<svg class="ico"><use href="#${genreIcon(g)}"/></svg>`}${esc(g)}</button>`).join("");
   el.onclick = (e) => { const b = e.target.closest(".chip"); if (b) onPick(b.dataset.g); };
 }
-function serieRow(s, extra) {
+function serieRow(s, extra, count) {
   return `<button class="serie" data-id="${esc(s.id)}">
     <span class="cover" data-cover="${esc(s.id)}"></span>
     <span class="meta"><span class="name">${esc(s.titre)}</span>
       <span class="sub">${esc([s.editeur, s.collection].filter(Boolean).join(" · "))}${s.aConfirmer ? ` <span class="flag">· à confirmer</span>` : ""}</span>
       ${extra || ""}</span>
-    <span class="count">${(s.possedes || []).length}</span></button>`;
+    <span class="count">${esc(count ?? (s.possedes || []).length)}</span></button>`;
 }
 function hydrateCovers(root) {
   root.querySelectorAll("[data-cover]").forEach((el) => {
@@ -181,16 +230,26 @@ function hydrateCovers(root) {
 }
 const sortFr = (a, b) => a.titre.localeCompare(b.titre, "fr", { sensitivity: "base" });
 
+let sortM = "az";
 function renderManques() {
   chips($("#chips-manques"), filterM, (g) => { filterM = g; renderManques(); });
-  const pool = db.series.filter((s) => filterM === "Tout" || s.genre === filterM);
+  $("#sort-manques").innerHTML = [["az", "A à Z"], ["near", "Presque complètes"]].map(([k, l]) =>
+    `<button class="chip" data-sort="${k}" aria-pressed="${k === sortM}">${l}</button>`).join("");
+  // Pendant une recherche « Est-ce que je l'ai ? », la liste ne garde que les séries concernées.
+  const q = $("#q").value.trim();
+  const hits = q ? new Set(bestSeries(parseLine(q)?.name || q, 8).map((r) => r.s.id)) : null;
+  const pool = db.series.filter((s) => (filterM === "Tout" || s.genre === filterM) && (!hits || hits.has(s.id)));
   const wishes = pool.filter((s) => (s.souhaits || []).length);
   $("#wish-block").innerHTML = wishes.length ? `<h2 class="h2">Liste de souhaits</h2><div class="list">${wishes.sort(sortFr).map((s) =>
-    serieRow(s, `<span class="gaps">${s.souhaits.map((n) => `<span class="num wish">${esc(n)}</span>`).join("")}</span>`)).join("")}</div>` : "";
-  const rows = pool.map((s) => ({ s, miss: missingOf(s) })).filter((r) => r.miss.length).sort((a, b) => sortFr(a.s, b.s));
+    serieRow(s, `<span class="gaps-txt wish">Souhaits : ${esc(s.souhaits.join(", "))}</span>`)).join("")}</div>` : "";
+  const rows = pool.map((s) => ({ s, miss: missingOf(s) })).filter((r) => r.miss.length)
+    .sort((a, b) => (!!a.s.aConfirmer - !!b.s.aConfirmer) || (sortM === "near" ? a.miss.length - b.miss.length : 0) || sortFr(a.s, b.s)); // « à confirmer » en fin de liste
   const list = $("#list-manques");
-  list.innerHTML = rows.length ? rows.map(({ s, miss }) => serieRow(s, `<span class="gaps">${miss.slice(0, 40).map((n) =>
-    `<span class="num${(s.souhaits || []).map(String).includes(String(n)) ? " wish" : ""}">${n}</span>`).join("")}${miss.length > 40 ? `<span class="num">+${miss.length - 40}</span>` : ""}</span>`)).join("")
+  list.innerHTML = rows.length ? rows.map(({ s, miss }) => {
+    const total = numeric(s.possedes).length + miss.length;
+    return serieRow(s, `<span class="gaps-txt">Il manque ${s.type === "fascicule" ? "n° " : ""}${esc(ranges(miss))}</span>`,
+      `${numeric(s.possedes).length}/${total}`);
+  }).join("")
     : `<p class="empty">${db.series.length ? "Aucun trou dans tes séries pour ce filtre." : "Ta collection est vide. Va dans Réglages pour importer ton fichier."}</p>`;
   hydrateCovers($("#v-manques"));
 }
@@ -198,21 +257,34 @@ function renderManques() {
 function renderAnswer() {
   const q = $("#q").value.trim(); const box = $("#answer");
   if (!q) { box.hidden = true; return; }
-  const p = parseLine(q); const found = bestSeries(p.name, 3);
+  const p = parseLine(q);
+  // Toutes les séries qui ressemblent autant que la meilleure (« Conan 12 » -> Super Conan, Conan Lug, Cimmérien…)
+  // avec un numéro, on ignore les intégrales et les livres isolés (« Nos années Strange » pour « Strange 74 »)
+  const all = bestSeries(p.name, 10).filter((r) => p.num == null || (!["integrale", "livre", "roman"].includes(r.s.type) && numeric(r.s.possedes).length));
+  const found = all.filter((r) => r.score >= all[0]?.score - 0.12).slice(0, 6);
   box.hidden = false;
-  if (!found.length) { box.innerHTML = `<span class="verdict miss">Série inconnue dans ta collection</span><span class="hint">Tu n'as rien qui ressemble à « ${esc(p.name)} ».</span>`; return; }
-  const s = found[0].s;
-  let head;
-  if (p.num != null) {
-    head = has(s, p.num) ? `<span class="verdict have">Oui, tu as ${esc(s.titre)} tome ${p.num}</span>`
-      : `<span class="verdict miss">Non, il te manque ${esc(s.titre)} tome ${p.num}</span>`;
-  } else head = `<span class="verdict">${esc(s.titre)}</span>`;
-  const owned = (s.possedes || []).join(", ") || "aucun";
-  const miss = missingOf(s);
-  box.innerHTML = `${head}<span class="hint">Tu as : ${esc(owned)}</span>${miss.length ? `<span class="hint">Il manque : ${miss.join(", ")}</span>` : ""}
-    ${found.length > 1 ? `<span class="hint">Ou peut-être : ${found.slice(1).map((r) => esc(r.s.titre)).join(", ")}</span>` : ""}
-    <div class="row wrap-row"><button class="btn small" data-open="${esc(s.id)}">Voir la série</button>
-    ${p.num != null && !has(s, p.num) ? `<button class="btn small primary" data-addnow="${esc(s.id)}" data-num="${p.num}">Je l'achète</button>` : ""}</div>`;
+  const addUnknown = `<button class="btn primary" data-addnew="${esc(q)}">Je l'achète : l'ajouter</button>`;
+  if (!found.length) {
+    box.innerHTML = `<span class="verdict big miss">NON</span><span class="hint">Tu n'as aucune série qui ressemble à « ${esc(p.name)} ».</span>
+      <div class="row wrap-row">${addUnknown}</div>`;
+    return;
+  }
+  if (p.num == null) {
+    box.innerHTML = found.map(({ s }) => {
+      const miss = missingOf(s);
+      return `<button class="verdict-row" data-open="${esc(s.id)}"><span class="v-name">${esc(s.titre)}</span>
+        <span class="v-sub">${miss.length ? `Il te manque ${esc(ranges(miss))}` : "Rien ne manque"}</span></button>`;
+    }).join("");
+    return;
+  }
+  box.innerHTML = found.map(({ s }) => {
+    const ok = has(s, p.num);
+    return `<div class="verdict-row ${ok ? "have" : "miss"}">
+      <span class="v-big">${ok ? "OUI" : "NON"}</span>
+      <button class="v-name" data-open="${esc(s.id)}">${esc(s.titre)} · ${esc(numLabel(s, p.num))}</button>
+      ${ok ? "" : `<button class="btn primary" data-addnow="${esc(s.id)}" data-num="${esc(p.num)}">Je l'achète</button>`}
+    </div>`;
+  }).join("") + `<div class="row wrap-row"><span class="hint">Pas la bonne série ?</span>${addUnknown.replace("btn primary", "btn")}</div>`;
 }
 
 function renderCollection() {
@@ -231,6 +303,7 @@ function renderStat() {
 function renderAll() { renderStat(); renderManques(); renderAnswer(); renderCollection(); }
 
 // ---------- fiche série ----------
+let wishMode = false;
 function openSerie(id) {
   const s = db.series.find((x) => x.id === id); if (!s) return;
   const dlg = $("#detail");
@@ -251,7 +324,8 @@ function openSerie(id) {
       <span class="cover" data-cover="${esc(s.id)}" style="width:72px;height:98px"></span>
       <div class="meta"><div>${esc(s.auteurs || "")}</div><div class="hint">${esc([s.editeur, s.collection].filter(Boolean).join(" · "))}</div>
       ${s.note ? `<div class="hint">${esc(s.note)}</div>` : ""}</div></div>
-    ${s.type !== "integrale" ? `<div class="legend"><span>Touche un numéro : possédé, puis souhaité, puis manquant.</span></div>
+    ${s.type !== "integrale" ? `<div class="row wrap-row legend"><span>${wishMode ? "Touche un numéro pour le mettre ou l'enlever de tes souhaits." : "Touche un numéro : je l'ai / je ne l'ai pas."}</span>
+      <button class="btn small${wishMode ? " primary" : ""}" data-wishmode aria-pressed="${wishMode}"><svg class="ico"><use href="#i-star"/></svg>Souhaits</button></div>
     <div class="tomes">${grid.join("")}</div>` : ""}
     ${others.length ? `<div><div class="hint">Autres volumes</div><div class="extra">${others.map((o) => `<span class="tome have">${esc(o)}</span>`).join("")}</div></div>` : ""}
     <div class="grid2">
@@ -270,6 +344,13 @@ function openSerie(id) {
     <div data-covers></div>
   </div>`;
   hydrateCovers(dlg);
+  // Chaque champ est enregistré dès qu'on le quitte : rien ne se perd si on touche un tome ensuite.
+  const meta = () => {
+    s.parus = Number($("#f-parus").value) || null; s.editeur = $("#f-editeur").value.trim();
+    s.collection = $("#f-collection").value.trim(); s.genre = $("#f-genre").value; save(KEY, db); renderAll();
+  };
+  dlg.querySelectorAll("#f-parus, #f-editeur, #f-collection, #f-genre").forEach((el) => (el.onchange = meta));
+  dlg.onclose = () => { wishMode = false; };
   dlg.querySelector("#f-photo").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     try { s.cover = await shrink(f); persist(); toast("Couverture enregistrée"); openSerie(s.id); }
@@ -281,17 +362,22 @@ function openSerie(id) {
     const tome = t.closest(".tome[data-n]");
     if (tome) {
       const n = Number(tome.dataset.n);
-      const w = (s.souhaits || []).map(String);
-      if (has(s, n)) { s.possedes = s.possedes.filter((x) => String(x) !== String(n)); s.souhaits = [...(s.souhaits || []), n]; }
-      else if (w.includes(String(n))) { s.souhaits = s.souhaits.filter((x) => String(x) !== String(n)); }
-      else { s.possedes = sortTomes([...(s.possedes || []), n]); }
-      persist(); return openSerie(s.id);
+      const before = { possedes: [...(s.possedes || [])], souhaits: [...(s.souhaits || [])] };
+      const isWish = (s.souhaits || []).map(String).includes(String(n));
+      if (wishMode) {
+        if (has(s, n)) return toast("Tu l'as déjà : il ne peut pas être en souhait.");
+        s.souhaits = isWish ? s.souhaits.filter((x) => String(x) !== String(n)) : sortTomes([...(s.souhaits || []), n]);
+        persist(); return openSerie(s.id);
+      }
+      if (has(s, n)) s.possedes = s.possedes.filter((x) => String(x) !== String(n));
+      else { s.possedes = sortTomes([...(s.possedes || []), n]); s.souhaits = (s.souhaits || []).filter((x) => String(x) !== String(n)); }
+      persist(); openSerie(s.id);
+      const lbl = numLabel(s, n).replace(/^./, (c) => c.toUpperCase());
+      return toast(has(s, n) ? `${lbl} ajouté` : `${lbl} retiré de ta collection`,
+        () => { Object.assign(s, before); persist(); if (dlg.open) openSerie(s.id); });
     }
-    if (t.closest("[data-savemeta]")) {
-      s.parus = Number($("#f-parus").value) || null; s.editeur = $("#f-editeur").value.trim();
-      s.collection = $("#f-collection").value.trim(); s.genre = $("#f-genre").value;
-      persist(); toast("Enregistré"); return openSerie(s.id);
-    }
+    if (t.closest("[data-wishmode]")) { wishMode = !wishMode; return openSerie(s.id); }
+    if (t.closest("[data-savemeta]")) { meta(); toast("Enregistré"); return openSerie(s.id); }
     if (t.closest("[data-del]")) { dlg.querySelector("[data-delconfirm]").hidden = false; return; }
     if (t.closest("[data-delno]")) { dlg.querySelector("[data-delconfirm]").hidden = true; return; }
     if (t.closest("[data-delyes]")) { db.series = db.series.filter((x) => x.id !== s.id); persist(); dlg.close(); return toast("Série supprimée"); }
@@ -319,6 +405,9 @@ async function shrink(file, w = 180) {
     c.getContext("2d").drawImage(img, 0, 0, w, h);
     return c.toDataURL("image/jpeg", 0.72);
   } finally { URL.revokeObjectURL(url); }
+}
+function removeVolume(s, num) {
+  s.possedes = (s.possedes || []).filter((x) => String(x) !== String(num)); persist();
 }
 function sortTomes(arr) {
   return [...new Set(arr.map((x) => (/^\d+$/.test(String(x)) ? Number(x) : x)))].sort((a, b) =>
@@ -354,33 +443,46 @@ function addVolume({ serieId, newName, genre, num, cand, wish }) {
   return s;
 }
 async function runSearch() {
-  const lines = $("#saisie").value.split(/\n|;|(?:\s+et\s+puis\s+)/).map(parseLine).filter(Boolean);
+  const lines = $("#saisie").value.split(/\n|;|(?:\s+et\s+puis\s+)/).map(parseLine).filter(Boolean)
+    .flatMap((p) => (p.nums.length > 1 ? p.nums.map((n) => ({ ...p, num: n })) : [p]));
   const out = $("#results");
   if (!lines.length) { out.innerHTML = `<p class="hint">Écris ou dicte au moins un album.</p>`; return; }
   const wish = $("#as-wish").checked;
   out.innerHTML = "";
   for (const p of lines) {
     const block = document.createElement("div"); block.className = "query"; out.append(block);
-    const match = bestSeries(p.name, 1)[0];
-    const target = match && match.score > 0.55 ? match.s : null;
-    const label = `${p.name}${p.num != null ? ` · tome ${p.num}` : ""}`;
+    // Les séries proches sont proposées, mais on ne range d'office dans une série existante que si le nom est quasi identique
+    // (sinon « Lanfeust des étoiles » finirait dans « Lanfeust de Troy »).
+    const near = bestSeries(p.name, 3).filter((r) => r.score > 0.55);
+    const sure = near[0] && (norm(near[0].s.titre) === norm(p.name) || near[0].score >= 0.85) ? near[0].s : null;
+    const label = `${p.name}${p.num != null ? ` · ${numLabel(sure || {}, p.num)}` : ""}`;
     const genreSel = `<select data-genre>${GENRES.map((g) => `<option>${g.id}</option>`).join("")}</select>`;
-    block.innerHTML = `<h3>${esc(label)}</h3><div class="target">${target ? `Sera ajouté à ta série « ${esc(target.titre)} »` : `Nouvelle série « ${esc(p.name)} », genre ${genreSel}`}</div><p class="hint">Recherche dans les bases…</p>`;
-    if (target && p.num != null && has(target, p.num) && !wish) block.querySelector(".hint").outerHTML = `<p class="done">Tu l'as déjà.</p>`;
+    const choice = `<select data-target>${near.map((r) => `<option value="${esc(r.s.id)}"${r.s === sure ? " selected" : ""}>Dans ma série « ${esc(r.s.titre)} »</option>`).join("")}
+      <option value=""${sure ? "" : " selected"}>Nouvelle série « ${esc(p.name)} »</option></select>`;
+    block.innerHTML = `<h3>${esc(label)}</h3><div class="target">${near.length ? choice : `Nouvelle série « ${esc(p.name)} »`}<span data-genre-wrap${sure ? " hidden" : ""}> · genre ${genreSel}</span></div><p class="hint">Recherche dans les bases…</p>`;
+    const tsel = block.querySelector("[data-target]");
+    const checkDup = () => {
+      const t = db.series.find((x) => x.id === tsel?.value);
+      block.querySelector("[data-genre-wrap]").hidden = !!t;
+      block.querySelector("[data-dup]")?.remove();
+      if (t && p.num != null && has(t, p.num) && !wish) block.querySelector(".target").insertAdjacentHTML("afterend", `<p class="done" data-dup>Tu l'as déjà.</p>`);
+    };
+    if (tsel) { tsel.onchange = checkDup; checkDup(); }
     let cands = [];
-    try { cands = await searchBases(target ? target.titre : p.name, p.num, target?.editeur, 6); }
+    try { cands = await searchBases(p.name, p.num, sure?.editeur, 6); } // toujours avec le texte saisi
     catch { cands = []; }
     const hint = block.querySelector(".hint"); if (hint) hint.remove();
     const wrap = document.createElement("div");
     wrap.innerHTML = `${cands.length ? `<p class="hint">Choisis la bonne édition (la première est la plus probable) :</p><div class="cands">${cands.map((c, i) => candHtml(c, i)).join("")}</div>` : `<p class="hint">Rien trouvé dans les bases (ou pas de réseau).</p>`}
       <div class="row wrap-row"><button class="btn small" data-plain>Ajouter sans édition précise</button></div>`;
     block.append(wrap);
-    const done = (s) => { wrap.innerHTML = `<p class="done">${wish ? "Ajouté aux souhaits" : "Ajouté"} : ${esc(s.titre)}${p.num != null ? ` tome ${p.num}` : ""}</p>`; };
+    const done = (s) => { wrap.innerHTML = `<p class="done">${wish ? "Ajouté aux souhaits" : "Ajouté"} : ${esc(s.titre)}${p.num != null ? ` ${esc(numLabel(s, p.num))}` : ""}</p>`; };
     wrap.onclick = (e) => {
       const b = e.target.closest(".cand"); const plain = e.target.closest("[data-plain]");
       if (!b && !plain) return;
       const genre = block.querySelector("[data-genre]")?.value;
-      done(addVolume({ serieId: target?.id, newName: p.name, genre, num: p.num, cand: b ? cands[Number(b.dataset.i)] : null, wish }));
+      if (tsel) tsel.disabled = true;
+      done(addVolume({ serieId: tsel?.value || null, newName: p.name, genre, num: p.num, cand: b ? cands[Number(b.dataset.i)] : null, wish }));
     };
   }
 }
@@ -444,29 +546,48 @@ $("#wipe-no").addEventListener("click", () => { $("#wipe-confirm").hidden = true
 $("#wipe-yes").addEventListener("click", () => { db = { version: 1, series: [] }; persist(); $("#wipe-confirm").hidden = true; toast("Collection effacée"); });
 
 // ---------- navigation & évènements ----------
+const VIEWS = ["manques", "collection", "ajouter", "reglages"];
 function show(v) {
   document.querySelectorAll(".view").forEach((s) => (s.hidden = s.id !== "v-" + v));
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.v === v));
-  if (location.hash !== "#" + v) history.replaceState(null, "", "#" + v);
+  if (location.hash !== "#" + v) history.pushState(null, "", "#" + v); // le bouton retour d'Android revient à l'écran précédent
   window.scrollTo(0, 0);
 }
+window.addEventListener("hashchange", () => { const v = location.hash.slice(1); if (VIEWS.includes(v)) show(v); });
 document.querySelector(".tabs").addEventListener("click", (e) => { const t = e.target.closest(".tab"); if (t) show(t.dataset.v); });
 $("#main").addEventListener("click", (e) => {
   const add = e.target.closest("[data-addnow]");
-  if (add) { addVolume({ serieId: add.dataset.addnow, num: Number(add.dataset.num) }); return toast("Ajouté à ta collection"); }
+  if (add) {
+    const num = /^\d+$/.test(add.dataset.num) ? Number(add.dataset.num) : add.dataset.num;
+    const s = addVolume({ serieId: add.dataset.addnow, num });
+    return toast(`Ajouté : ${s.titre} ${numLabel(s, num)}`, () => { removeVolume(s, num); });
+  }
+  const addNew = e.target.closest("[data-addnew]");
+  if (addNew) { $("#saisie").value = addNew.dataset.addnew; $("#as-wish").checked = false; show("ajouter"); return runSearch(); }
   const open = e.target.closest("[data-open], .serie");
   if (open) openSerie(open.dataset.open || open.dataset.id);
 });
-$("#q").addEventListener("input", renderAnswer);
+$("#q").addEventListener("input", () => { renderAnswer(); renderManques(); });
 $("#qc").addEventListener("input", renderCollection);
+$("#sort-manques").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { sortM = b.dataset.sort; renderManques(); } });
 $("#go").addEventListener("click", runSearch);
 window.addEventListener("online", () => pumpCovers());
 
 let toastTimer;
-function toast(msg) { const t = $("#toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 2600); }
+// Message bref en bas de l'écran ; avec undo, un bouton « Annuler » reste 6 secondes.
+function toast(msg, undo) {
+  const t = $("#toast"); t.textContent = msg; t.hidden = false;
+  const dlg = $("#detail"); (dlg.open ? dlg : document.body).append(t); // au-dessus de la fiche ouverte, sinon il n'est pas touchable
+  if (undo) {
+    const b = document.createElement("button"); b.className = "toast-undo"; b.textContent = "Annuler";
+    b.onclick = () => { undo(); t.hidden = true; }; t.append(b);
+  }
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), undo ? 6000 : 2600);
+}
 
 const start = (location.hash || "").slice(1);
-show(["manques", "collection", "ajouter", "reglages"].includes(start) ? start : db.series.length ? "manques" : "reglages");
+const first = VIEWS.includes(start) ? start : db.series.length ? "manques" : "reglages";
+history.replaceState(null, "", "#" + first); show(first);
 renderAll();
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});

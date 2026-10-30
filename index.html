@@ -39,15 +39,18 @@
 <main class="wrap" id="main">
   <!-- Manques -->
   <section id="v-manques" class="view">
-    <label class="search" for="q">
-      <svg class="ico"><use href="#i-search"/></svg>
-      <input id="q" type="search" placeholder="Est-ce que je l'ai ? ex. « Elfes 21 »" autocomplete="off">
-    </label>
-    <div id="answer" class="answer" hidden></div>
+    <div class="sticky-search">
+      <label class="search" for="q">
+        <svg class="ico"><use href="#i-search"/></svg>
+        <input id="q" type="search" placeholder="Est-ce que je l'ai ? ex. « Elfes 21 »" autocomplete="off" enterkeyhint="search">
+      </label>
+      <div id="answer" class="answer" hidden></div>
+    </div>
     <div id="chips-manques" class="chips" role="group" aria-label="Filtrer par genre"></div>
     <div id="wish-block"></div>
     <h2 class="h2">Tomes manquants</h2>
-    <p class="hint">Les trous dans la numérotation de chaque série, et au-delà si tu indiques le nombre de tomes parus.</p>
+    <p class="hint">Les trous dans chaque série, et les tomes parus après ton dernier quand le nombre de tomes parus est connu. À droite : possédés / total.</p>
+    <div id="sort-manques" class="chips" role="group" aria-label="Trier"></div>
     <div id="list-manques" class="list"></div>
   </section>
 
