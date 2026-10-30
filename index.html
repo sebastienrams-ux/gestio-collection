@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ma Bibliothèque</title>
+<meta name="theme-color" content="#1f1a15">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alegreya+Sans:wght@400;500;700&family=IM+Fell+English+SC&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-sword" viewBox="0 0 24 24"><path d="M14.5 3H21v6.5L10 20.5l-3.5-3.5L17.5 6M5 15l4 4M3 21l3-3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-planet" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 15.5c-1.5 2 .2 3.3 4 2.6 2.8-.5 6.4-2 9.6-4.2 4-2.7 5.8-5.6 4-6.8-.9-.6-2.4-.5-4.2.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-burst" viewBox="0 0 24 24"><path d="M12 2.5l2.2 5.3 5.6-1.7-2.7 5.1 4.4 3.7-5.7.8.3 5.8L12 17.8l-4.1 3.7.3-5.8-5.7-.8 4.4-3.7-2.7-5.1 5.6 1.7z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 4.5h6a2 2 0 0 1 2 2V20a1.6 1.6 0 0 0-1.6-1.5H4zM20 4.5h-6a2 2 0 0 0-2 2V20a1.6 1.6 0 0 1 1.6-1.5H20z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-d20" viewBox="0 0 24 24"><path d="M12 2.5l8.5 4.9v9.2L12 21.5l-8.5-4.9V7.4zM12 2.5L7 14h10zM3.5 7.4L7 14l-3.5 2.6M20.5 7.4L17 14l3.5 2.6M7 14l5 7.5 5-7.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></symbol>
+  <symbol id="i-gap" viewBox="0 0 24 24"><path d="M5 4v16M10 4v16M19.5 4.5l-4 15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M13 9.5l2 2-2 2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-dasharray="1 2.5"/></symbol>
+  <symbol id="i-shelf" viewBox="0 0 24 24"><path d="M3 20.5h18M5 20V6h3v14M9 20V4h3v16M13.5 20l2.5-13 3 .6-2.5 12.9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.5l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z" fill="currentColor"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15 15l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</svg>
+
+<header class="top">
+  <div class="wrap top-inner">
+    <h1 class="brand"><svg class="ico"><use href="#i-shelf"/></svg> Ma Bibliothèque</h1>
+    <span id="stat" class="stat"></span>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <!-- Manques -->
+  <section id="v-manques" class="view">
+    <label class="search" for="q">
+      <svg class="ico"><use href="#i-search"/></svg>
+      <input id="q" type="search" placeholder="Est-ce que je l'ai ? ex. « Elfes 21 »" autocomplete="off">
+    </label>
+    <div id="answer" class="answer" hidden></div>
+    <div id="chips-manques" class="chips" role="group" aria-label="Filtrer par genre"></div>
+    <div id="wish-block"></div>
+    <h2 class="h2">Tomes manquants</h2>
+    <p class="hint">Les trous dans la numérotation de chaque série, et au-delà si tu indiques le nombre de tomes parus.</p>
+    <div id="list-manques" class="list"></div>
+  </section>
+
+  <!-- Collection -->
+  <section id="v-collection" class="view" hidden>
+    <label class="search" for="qc">
+      <svg class="ico"><use href="#i-search"/></svg>
+      <input id="qc" type="search" placeholder="Chercher une série, un auteur, un éditeur" autocomplete="off">
+    </label>
+    <div id="chips-collection" class="chips" role="group" aria-label="Filtrer par genre"></div>
+    <div id="list-collection" class="list"></div>
+  </section>
+
+  <!-- Ajouter -->
+  <section id="v-ajouter" class="view" hidden>
+    <h2 class="h2">Ajouter des albums</h2>
+    <p class="hint">Dicte ou tape une ligne par album : « Elfes tome 19 », « Conan le Cimmérien 12 », « Spécial Strange 81 ». Tu peux aussi utiliser le micro de ton clavier.</p>
+    <div class="dictee">
+      <textarea id="saisie" rows="4" placeholder="Elfes tome 19&#10;Nains 8"></textarea>
+      <button id="mic" class="btn icon-btn" type="button" aria-label="Dicter"><svg class="ico"><use href="#i-mic"/></svg></button>
+    </div>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="as-wish"> Mettre en liste de souhaits</label>
+      <button id="go" class="btn primary" type="button">Chercher</button>
+    </div>
+    <div id="results" class="results"></div>
+  </section>
+
+  <!-- Réglages -->
+  <section id="v-reglages" class="view" hidden>
+    <h2 class="h2">Ma collection</h2>
+    <div class="panel">
+      <p>Ta collection est enregistrée dans ce navigateur, sur cet appareil. Personne d'autre n'y a accès.</p>
+      <div class="row wrap-row">
+        <label class="btn primary file-btn">Importer un fichier<input id="imp" type="file" accept=".json,application/json" hidden></label>
+        <button id="exp" class="btn" type="button">Sauvegarder (exporter)</button>
+      </div>
+      <p class="hint">Importer remplace les séries de même nom et garde les autres. Pense à exporter de temps en temps pour garder une copie.</p>
+      <p id="imp-msg" class="msg" role="status"></p>
+    </div>
+    <h2 class="h2">Couvertures</h2>
+    <div class="panel">
+      <p>Les vignettes viennent de Google Books et d'Open Library. Elles restent en mémoire pour être visibles sans réseau.</p>
+      <button id="clear-covers" class="btn" type="button">Rechercher à nouveau toutes les couvertures</button>
+    </div>
+    <h2 class="h2">Tout effacer</h2>
+    <div class="panel">
+      <p>Supprime la collection de cet appareil. Exporte d'abord si tu veux la garder.</p>
+      <button id="wipe" class="btn danger" type="button">Effacer la collection</button>
+      <div id="wipe-confirm" class="row" hidden>
+        <span>Vraiment tout effacer ?</span>
+        <button id="wipe-yes" class="btn danger" type="button">Oui, effacer</button>
+        <button id="wipe-no" class="btn" type="button">Annuler</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<nav class="tabs" aria-label="Navigation">
+  <button data-v="manques" class="tab on"><svg class="ico"><use href="#i-gap"/></svg><span>Manques</span></button>
+  <button data-v="collection" class="tab"><svg class="ico"><use href="#i-shelf"/></svg><span>Collection</span></button>
+  <button data-v="ajouter" class="tab"><svg class="ico"><use href="#i-plus"/></svg><span>Ajouter</span></button>
+  <button data-v="reglages" class="tab"><svg class="ico"><use href="#i-gear"/></svg><span>Réglages</span></button>
+</nav>
+
+<dialog id="detail" class="sheet"></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
