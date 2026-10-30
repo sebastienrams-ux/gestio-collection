@@ -92,9 +92,14 @@ async function pumpCovers() {
     const s = db.series.find((x) => x.id === id);
     if (!s || seriesCover(s) || covers[id] === "") continue;
     const first = numeric(s.possedes).sort((a, b) => a - b)[0];
-    const cands = await searchBases(s.titre, first ?? null, s.editeur, 4).catch(() => null);
+    let cands = await searchBases(s.titre, first ?? null, s.editeur, 6).catch(() => null);
     if (cands === null) break; // hors ligne ou quota : on réessaiera plus tard
-    const pick = cands.find((c) => c.cover);
+    let pick = cands.find((c) => c.cover && c.score > 1.2);
+    if (!pick) { // deuxième essai : le nom de la série seul, avec l'éditeur
+      cands = await searchBases(s.titre, null, s.editeur, 6, `intitle:${s.titre}${s.editeur ? ` inpublisher:${s.editeur.split(" ")[0]}` : ""}`).catch(() => null);
+      if (cands === null) break;
+      pick = cands.find((c) => c.cover && c.score > 1.2);
+    }
     covers[id] = pick ? pick.cover : "";
     save(COVERS_KEY, covers);
     document.querySelectorAll(`[data-cover="${CSS.escape(id)}"]`).forEach((el) => paintCover(el, s));
@@ -140,8 +145,8 @@ function rank(c, name, num, editeur) {
   if (c.cover) sc += 0.4;
   return sc;
 }
-async function searchBases(name, num, editeur, max = 6) {
-  const q = num != null ? `${name} ${num}` : name;
+async function searchBases(name, num, editeur, max = 6, query) {
+  const q = query || (num != null ? `${name} ${num}` : name);
   const res = await Promise.allSettled([googleBooks(q, 8), openLibrary(q, 6)]);
   if (res.every((r) => r.status === "rejected")) throw new Error("offline");
   const all = res.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
@@ -257,13 +262,19 @@ function openSerie(id) {
     </div>
     <div class="row wrap-row">
       <button class="btn primary" data-savemeta>Enregistrer</button>
-      <button class="btn" data-recover>Changer la couverture</button>
+      <button class="btn" data-recover>Chercher une couverture</button>
+      <label class="btn">Photographier la couverture<input id="f-photo" type="file" accept="image/*" capture="environment" hidden></label>
       <button class="btn danger" data-del>Supprimer la série</button>
     </div>
     <div class="row" data-delconfirm hidden><span>Supprimer « ${esc(s.titre)} » ?</span><button class="btn danger small" data-delyes>Oui</button><button class="btn small" data-delno>Non</button></div>
     <div data-covers></div>
   </div>`;
   hydrateCovers(dlg);
+  dlg.querySelector("#f-photo").onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    try { s.cover = await shrink(f); persist(); toast("Couverture enregistrée"); openSerie(s.id); }
+    catch { toast("Impossible de lire cette photo."); }
+  };
   dlg.onclick = async (e) => {
     const t = e.target;
     if (t === dlg || t.closest("[data-close]")) return dlg.close();
@@ -297,6 +308,17 @@ function openSerie(id) {
     }
   };
   if (!dlg.open) dlg.showModal();
+}
+// Réduit une photo à une petite vignette (environ 10 Ko) pour la garder dans le navigateur.
+async function shrink(file, w = 180) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((ok, ko) => { const i = new Image(); i.onload = () => ok(i); i.onerror = ko; i.src = url; });
+    const h = Math.round((img.height / img.width) * w);
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    c.getContext("2d").drawImage(img, 0, 0, w, h);
+    return c.toDataURL("image/jpeg", 0.72);
+  } finally { URL.revokeObjectURL(url); }
 }
 function sortTomes(arr) {
   return [...new Set(arr.map((x) => (/^\d+$/.test(String(x)) ? Number(x) : x)))].sort((a, b) =>
@@ -389,7 +411,14 @@ function mergeImport(data) {
     if (!s || !s.titre) continue;
     s.possedes = s.possedes || []; s.souhaits = s.souhaits || []; s.genre = s.genre || "Fantasy";
     const i = db.series.findIndex((x) => norm(x.titre) === norm(s.titre));
-    if (i >= 0) { s.id = db.series[i].id; db.series[i] = { ...db.series[i], ...s }; replaced++; }
+    if (i >= 0) {
+      const old = db.series[i];
+      s.id = old.id;
+      s.possedes = sortTomes([...(old.possedes || []), ...s.possedes]); // on n'efface jamais ce qui a été ajouté dans l'appli
+      s.souhaits = sortTomes([...(old.souhaits || []), ...s.souhaits]).filter((x) => !s.possedes.map(String).includes(String(x)));
+      db.series[i] = { ...old, ...s, cover: old.cover || s.cover, editions: { ...(s.editions || {}), ...(old.editions || {}) } };
+      replaced++;
+    }
     else { s.id = s.id && !db.series.some((x) => x.id === s.id) ? s.id : slug(s.titre); db.series.push(s); added++; }
   }
   persist();

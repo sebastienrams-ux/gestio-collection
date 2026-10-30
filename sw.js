@@ -1,5 +1,5 @@
 // Cache hors ligne : l'appli elle-même, puis les couvertures déjà vues.
-const APP = "gestio-app-v1";
+const APP = "gestio-app-v2";
 const IMG = "gestio-covers-v1";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "manifest.webmanifest", "icon.svg", "icon-192.png", "icon-512.png"];
 
