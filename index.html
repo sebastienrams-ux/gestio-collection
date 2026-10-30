@@ -46,9 +46,13 @@
       </label>
       <div id="answer" class="answer" hidden></div>
     </div>
+    <div id="backup" class="panel notice" hidden>
+      <p id="backup-txt"></p>
+      <div class="row wrap-row"><button class="btn primary" type="button" data-export>Sauvegarder maintenant</button><button id="backup-later" class="btn" type="button">Plus tard</button></div>
+    </div>
     <div id="chips-manques" class="chips" role="group" aria-label="Filtrer par genre"></div>
     <div id="wish-block"></div>
-    <h2 class="h2">Tomes manquants</h2>
+    <div class="row"><h2 class="h2">Tomes manquants</h2><button class="btn small" type="button" data-share>Partager ma liste</button></div>
     <p class="hint">Les trous dans chaque série, et les tomes parus après ton dernier quand le nombre de tomes parus est connu. À droite : possédés / total.</p>
     <div id="sort-manques" class="chips" role="group" aria-label="Trier"></div>
     <div id="list-manques" class="list"></div>
@@ -89,7 +93,13 @@
         <button id="exp" class="btn" type="button">Sauvegarder (exporter)</button>
       </div>
       <p class="hint">Importer ajoute les séries nouvelles et complète celles que tu as déjà, sans rien effacer. Pense à exporter de temps en temps pour garder une copie.</p>
+      <p id="last-exp" class="hint"></p>
       <p id="imp-msg" class="msg" role="status"></p>
+    </div>
+    <h2 class="h2">Partager avec la famille</h2>
+    <div class="panel">
+      <p>Envoie la liste de ce qui te manque par SMS, WhatsApp ou e-mail, pour les idées de cadeaux. Ils reçoivent un simple texte, ta collection reste sur ton téléphone.</p>
+      <button class="btn" type="button" data-share>Partager ma liste</button>
     </div>
     <h2 class="h2">Couvertures</h2>
     <div class="panel">

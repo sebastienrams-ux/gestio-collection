@@ -22,7 +22,9 @@ function save(key, value) {
 }
 let db = load(KEY, { version: 1, series: [] });
 let covers = load(COVERS_KEY, {});
-const persist = () => { save(KEY, db); renderAll(); };
+const META_KEY = "gestio.meta";
+let meta = load(META_KEY, { changes: 0, lastExport: null });
+const persist = () => { save(KEY, db); meta.changes++; save(META_KEY, meta); renderAll(); };
 if (navigator.storage?.persist) navigator.storage.persist().catch(() => {});
 
 // ---------- outils texte ----------
@@ -300,9 +302,24 @@ function renderStat() {
   const vol = db.series.reduce((n, s) => n + (s.possedes || []).length, 0);
   $("#stat").textContent = db.series.length ? `${db.series.length} séries · ${vol} volumes` : "";
 }
-function renderAll() { renderStat(); renderManques(); renderAnswer(); renderCollection(); }
+function renderAll() { renderStat(); renderManques(); renderAnswer(); renderCollection(); if (typeof renderBackup === "function") renderBackup(); }
 
 // ---------- fiche série ----------
+// Titres des tomes et éditions choisies, tome par tome
+function detailList(s) {
+  const keys = sortTomes([...Object.keys(s.titres || {}), ...Object.keys(s.editions || {}), ...(s.possedes || [])]);
+  const rows = keys.map((k) => {
+    const ed = (s.editions || {})[k]; const titre = (s.titres || {})[k];
+    if (!ed && !titre) return "";
+    const owned = has(s, k);
+    const info = ed ? [ed.editeur, ed.annee, ed.isbn && `ISBN ${ed.isbn}`].filter(Boolean).join(" · ") : "";
+    return `<li class="drow${owned ? "" : " not"}"><span class="dnum">${esc(k)}</span>
+      <span>${ed?.cover ? `<img class="dcov" src="${esc(ed.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ""}</span>
+      <span class="dtxt"><span>${esc(titre || ed?.titre || "")}</span>${info ? `<span class="hint">${esc(info)}</span>` : ""}</span>
+      <span class="dst">${owned ? "✓" : ""}</span></li>`;
+  }).join("");
+  return rows ? `<details class="details"${keys.length <= 20 ? " open" : ""}><summary>Titres et éditions</summary><ul class="dlist">${rows}</ul></details>` : "";
+}
 let wishMode = false;
 function openSerie(id) {
   const s = db.series.find((x) => x.id === id); if (!s) return;
@@ -328,6 +345,7 @@ function openSerie(id) {
       <button class="btn small${wishMode ? " primary" : ""}" data-wishmode aria-pressed="${wishMode}"><svg class="ico"><use href="#i-star"/></svg>Souhaits</button></div>
     <div class="tomes">${grid.join("")}</div>` : ""}
     ${others.length ? `<div><div class="hint">Autres volumes</div><div class="extra">${others.map((o) => `<span class="tome have">${esc(o)}</span>`).join("")}</div></div>` : ""}
+    ${detailList(s)}
     <div class="grid2">
       <label class="field">Tomes parus (pour voir les manques au-delà)<input id="f-parus" type="number" min="0" inputmode="numeric" value="${s.parus || ""}"></label>
       <label class="field">Éditeur<input id="f-editeur" value="${esc(s.editeur)}"></label>
@@ -504,6 +522,34 @@ $("#mic").addEventListener("click", () => {
   rec.start();
 });
 
+// ---------- partage famille (texte, sans serveur) ----------
+function shareText() {
+  const fmt = (s, list) => `- ${s.titre}${s.editeur ? ` (${s.editeur})` : ""} : ${s.type === "fascicule" ? "n° " : ""}${list}`;
+  const known = db.series.filter((s) => !s.aConfirmer);
+  const wishes = known.filter((s) => (s.souhaits || []).length).sort(sortFr).map((s) => fmt(s, s.souhaits.join(", ")));
+  const miss = known.map((s) => ({ s, m: missingOf(s) })).filter((r) => r.m.length).sort((a, b) => sortFr(a.s, b.s))
+    .map(({ s, m }) => fmt(s, ranges(m)));
+  return [`Les BD qui me manquent (idées cadeaux) — mise à jour du ${new Date().toLocaleDateString("fr-FR")}`,
+    wishes.length ? `\nCe que j'aimerais en priorité :\n${wishes.join("\n")}` : "",
+    `\nTomes qui manquent à mes séries :\n${miss.join("\n")}`].filter(Boolean).join("\n");
+}
+async function shareList() {
+  const text = shareText();
+  try { if (navigator.share) { await navigator.share({ title: "Mes BD qui manquent", text }); return; } } catch (e) { if (e.name === "AbortError") return; }
+  try { await navigator.clipboard.writeText(text); toast("Liste copiée : colle-la dans un SMS ou WhatsApp."); }
+  catch { toast("Partage impossible sur cet appareil."); }
+}
+document.querySelectorAll("[data-share]").forEach((b) => b.addEventListener("click", shareList));
+
+// ---------- rappel de sauvegarde ----------
+function renderBackup() {
+  const days = meta.lastExport ? (Date.now() - meta.lastExport) / 864e5 : Infinity;
+  const due = db.series.length && meta.changes >= 15 && (days > 7 || meta.changes >= 50);
+  $("#backup").hidden = !due;
+  if (due) $("#backup-txt").textContent = `${meta.changes} changements depuis ta dernière sauvegarde. Ta collection n'existe que sur ce téléphone : garde une copie.`;
+  $("#last-exp").textContent = meta.lastExport ? `Dernière sauvegarde : ${new Date(meta.lastExport).toLocaleDateString("fr-FR")}.` : "Aucune sauvegarde pour l'instant.";
+}
+
 // ---------- import / export ----------
 function mergeImport(data) {
   const incoming = Array.isArray(data) ? data : data.series;
@@ -534,12 +580,16 @@ $("#imp").addEventListener("change", async (e) => {
   } catch { $("#imp-msg").textContent = "Ce fichier n'est pas une collection valide."; }
   e.target.value = "";
 });
-$("#exp").addEventListener("click", () => {
+function exportFile() {
   const blob = new Blob([JSON.stringify(db, null, 1)], { type: "application/json" });
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
   a.download = `ma-collection-${new Date().toISOString().slice(0, 10)}.json`; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-});
+  meta = { changes: 0, lastExport: Date.now() }; save(META_KEY, meta); renderBackup();
+  toast("Fichier enregistré dans tes Téléchargements.");
+}
+document.querySelectorAll("#exp, [data-export]").forEach((b) => b.addEventListener("click", exportFile));
+$("#backup-later").addEventListener("click", () => { meta.changes = 0; save(META_KEY, meta); renderBackup(); });
 $("#clear-covers").addEventListener("click", () => { covers = {}; save(COVERS_KEY, covers); renderAll(); toast("Les couvertures vont être recherchées à nouveau."); });
 $("#wipe").addEventListener("click", () => { $("#wipe-confirm").hidden = false; });
 $("#wipe-no").addEventListener("click", () => { $("#wipe-confirm").hidden = true; });
@@ -593,4 +643,4 @@ renderAll();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
 // pour les tests
-window.__gestio = { parseLine, similarity, missingOf, bestSeries, mergeImport };
+window.__gestio = { parseLine, similarity, missingOf, bestSeries, mergeImport, shareText };
