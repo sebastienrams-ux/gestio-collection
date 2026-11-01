@@ -512,20 +512,56 @@ async function runSearch() {
 }
 
 // dictée vocale du navigateur (Chrome Android, Edge, Safari récent)
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+// La reconnaissance passe par les serveurs de Google (Chrome) : il faut internet et l'accès au micro.
+const SR = window.webkitSpeechRecognition || window.SpeechRecognition; // la version préfixée est la plus éprouvée sur Chrome
+const MIC_ERR = {
+  "not-allowed": "Le micro est refusé. Touche le cadenas à gauche de l'adresse, puis Autorisations > Micro > Autoriser. Si l'appli est installée : Paramètres Android > Applis > Chrome > Autorisations > Micro.",
+  "service-not-allowed": "Ce navigateur bloque la dictée. Ouvre l'appli dans Chrome, ou utilise le micro de ton clavier.",
+  "audio-capture": "Le micro ne répond pas (une autre appli l'utilise peut-être). Réessaie, ou utilise le micro de ton clavier.",
+  "network": "La dictée a besoin d'internet. Sans réseau, utilise le micro de ton clavier.",
+  "no-speech": "Je n'ai rien entendu. Touche le micro, attends qu'il devienne rouge, puis parle.",
+  "language-not-supported": "Le français n'est pas disponible pour la dictée sur ce téléphone. Utilise le micro de ton clavier.",
+};
 let rec = null;
+function keyboardMic(msg) {
+  toast(msg);
+  const ta = $("#saisie"); ta.focus(); // fait apparaître le clavier, et donc son micro
+}
 $("#mic").addEventListener("click", () => {
-  if (!SR) return toast("Dictée non disponible ici : utilise le micro de ton clavier.");
-  if (rec) { rec.stop(); return; }
-  rec = new SR(); rec.lang = "fr-FR"; rec.interimResults = false; rec.continuous = false;
-  $("#mic").classList.add("live");
-  rec.onresult = (e) => {
-    const said = Array.from(e.results).map((r) => r[0].transcript).join(" ").trim();
-    const ta = $("#saisie"); ta.value = (ta.value.trim() ? ta.value.trim() + "\n" : "") + said;
+  if (rec) { try { rec.stop(); } catch { /* déjà arrêtée */ } return; }
+  if (!SR) return keyboardMic("Dictée non disponible dans ce navigateur : utilise le micro de ton clavier (ou ouvre l'appli dans Chrome).");
+  if (navigator.onLine === false) return keyboardMic(MIC_ERR.network);
+  const ta = $("#saisie"), mic = $("#mic");
+  const base = ta.value.trim() ? ta.value.trim() + "\n" : "";
+  let heard = false, failed = false, started = false;
+  const r = new SR();
+  r.lang = "fr-FR"; r.interimResults = true; r.continuous = false; r.maxAlternatives = 1;
+  mic.classList.add("live");
+  r.onstart = () => { started = true; toast("Je t'écoute… parle maintenant."); };
+  // Si rien ne démarre (micro bloqué sans message, service indisponible), on ne reste pas bloqué.
+  const watchdog = setTimeout(() => { if (!started && rec === r) { failed = true; try { r.abort(); } catch { /* rien */ } rec = null; mic.classList.remove("live");
+    keyboardMic("La dictée ne démarre pas sur ce téléphone. Utilise le micro de ton clavier."); } }, 5000);
+  r.onresult = (e) => {
+    // On recalcule tout le texte à chaque fois : Chrome Android répète parfois des morceaux sinon.
+    const said = Array.from(e.results).map((x) => x[0].transcript).join(" ").replace(/\s+/g, " ").trim();
+    if (said) { heard = true; ta.value = base + said; }
   };
-  rec.onerror = (e) => toast(e.error === "not-allowed" ? "Autorise le micro pour dicter." : "La dictée s'est arrêtée.");
-  rec.onend = () => { $("#mic").classList.remove("live"); rec = null; };
-  rec.start();
+  r.onerror = (e) => {
+    if (e.error === "aborted") return;
+    failed = true;
+    const msg = MIC_ERR[e.error] || `La dictée s'est arrêtée (${e.error || "erreur inconnue"}). Tu peux utiliser le micro de ton clavier.`;
+    if (["not-allowed", "service-not-allowed", "network", "language-not-supported"].includes(e.error)) keyboardMic(msg); else toast(msg);
+  };
+  r.onend = () => {
+    clearTimeout(watchdog);
+    if (rec !== r) return;
+    mic.classList.remove("live"); rec = null;
+    if (!heard && !failed) toast(MIC_ERR["no-speech"]);
+    else if (heard) { $("#toast").hidden = true; ta.scrollTop = ta.scrollHeight; }
+  };
+  rec = r;
+  try { r.start(); }
+  catch { clearTimeout(watchdog); rec = null; mic.classList.remove("live"); keyboardMic("La dictée n'a pas pu démarrer. Utilise le micro de ton clavier."); }
 });
 
 // ---------- partage famille (texte, sans serveur) ----------
@@ -638,7 +674,7 @@ function toast(msg, undo) {
     const b = document.createElement("button"); b.className = "toast-undo"; b.textContent = "Annuler";
     b.onclick = () => { undo(); t.hidden = true; }; t.append(b);
   }
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), undo ? 6000 : 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), undo ? 6000 : Math.max(2600, msg.length * 70)); // les longs messages restent le temps de les lire
 }
 
 const start = (location.hash || "").slice(1);
