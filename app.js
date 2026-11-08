@@ -163,19 +163,40 @@ async function pumpCovers() {
 }
 // Seules les images https et les photos prises dans l'appli sont affichées (pas d'adresse piégée venue d'un import).
 const safeImg = (u) => (typeof u === "string" && /^(https:\/\/|data:image\/(jpeg|png|webp);)/i.test(u) ? u : null);
+// Sans couverture : un dos de livre en cuir, teinté selon le genre, avec les initiales de la série.
+const SPINE = { Fantasy: "#6b3a2a", SF: "#2f4a5a", Comics: "#7a5a1a", "Autres BD": "#4a4a3a", "Hors BD": "#3f3550" };
+const initials = (t) => tokens(t).filter((w) => !/^\d+$/.test(w)).slice(0, 3).map((w) => w[0].toUpperCase()).join("") || "?";
+function spineHtml(s) {
+  return `<span class="spine" style="--gc:${SPINE[s.genre] || SPINE["Autres BD"]}"><span>${esc(initials(s.titre))}</span></span>`;
+}
 function paintCover(el, s) {
   const url = safeImg(seriesCover(s));
-  el.innerHTML = url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<svg class="ico"><use href="#${genreIcon(s.genre)}"/></svg>`;
+  el.innerHTML = url ? `<img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : spineHtml(s);
+  const img = el.querySelector("img");
+  if (img) img.onerror = () => {
+    if (covers[s.id] === url) { covers[s.id] = `none:${Date.now()}`; save(COVERS_KEY, covers); } // image devinée par ISBN qui n'existe pas
+    el.innerHTML = spineHtml(s);
+  };
 }
 const io = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
   entries.forEach((e) => { if (e.isIntersecting) { const s = db.series.find((x) => x.id === e.target.dataset.cover); if (s) wantCover(s); io.unobserve(e.target); } });
 }, { rootMargin: "200px" }) : null;
 
 // ---------- recherche dans les bases ----------
+// Google Books (clé gratuite de l'utilisateur, sinon quota partagé souvent épuisé), BnF (ISBN et titres exacts des
+// albums déposés en France), Open Library (secours). Rien n'est envoyé d'autre que le texte cherché.
+const GB_KEY = "gestio.gbkey";
+const gbKey = () => { try { return localStorage.getItem(GB_KEY) || ""; } catch { return ""; } };
+let gbPausedUntil = 0; // après un « quota atteint », on laisse Google tranquille 10 minutes
+let lastSearchError = "";
 const https = (u) => (u ? u.replace(/^http:/, "https:").replace("&edge=curl", "") : null);
 async function googleBooks(q, max) {
-  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=${max}&printType=books`;
-  const r = await fetch(url); if (!r.ok) throw new Error("google " + r.status);
+  if (Date.now() < gbPausedUntil) throw new Error("google quota");
+  const key = gbKey();
+  const url = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=${max}&printType=books${key ? `&key=${encodeURIComponent(key)}` : ""}`;
+  const r = await fetch(url);
+  if (r.status === 429 || r.status === 403) { gbPausedUntil = Date.now() + 10 * 60e3; lastSearchError = key ? "quota" : "quota-nokey"; }
+  if (!r.ok) throw new Error("google " + r.status);
   const j = await r.json();
   return (j.items || []).map((it) => {
     const v = it.volumeInfo || {};
@@ -194,22 +215,56 @@ async function openLibrary(q, max) {
     auteurs: (d.author_name || []).slice(0, 3).join(", "), isbn: (d.isbn || [])[0] || "",
     cover: d.cover_i ? `https://covers.openlibrary.org/b/id/${d.cover_i}-M.jpg` : null }));
 }
+// Catalogue général de la BnF (SRU, Dublin Core). Donne le titre exact du tome et son ISBN ; pas d'image (droits).
+const cql = (s) => String(s).replace(/["\\]/g, " ").trim();
+async function bnf(name, num, editeur, max) {
+  let q = `bib.title all "${cql(name)}${num != null ? ` ${num}` : ""}"`;
+  if (editeur) q += ` and bib.publisher all "${cql(editeur.split(/[ /?]/)[0])}"`;
+  const url = `https://catalogue.bnf.fr/api/SRU?version=1.2&operation=searchRetrieve&recordSchema=dublincore&maximumRecords=${max}&query=${encodeURIComponent(q)}`;
+  const r = await fetch(url); if (!r.ok) throw new Error("bnf " + r.status);
+  return parseBnf(await r.text());
+}
+function parseBnf(xml) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const all = (el, tag) => [...el.getElementsByTagNameNS("*", tag)].map((x) => x.textContent.trim());
+  return [...doc.getElementsByTagNameNS("*", "dc")].map((dc) => {
+    const titre = (all(dc, "title")[0] || "").replace(/\s*\/.*$/, "").replace(/\s*\[[^\]]*\]/g, "");
+    const isbn = all(dc, "identifier").map((x) => x.match(/ISBN\s*([\dXx-]{10,17})/)?.[1]).find(Boolean)?.replace(/-/g, "") || "";
+    const editeur = (all(dc, "publisher")[0] || "").replace(/\s*\(.*$/, "");
+    const annee = (all(dc, "date")[0] || "").match(/\d{4}/)?.[0] || "";
+    const auteurs = all(dc, "creator").slice(0, 3).map((c) => c.replace(/\s*\(.*$/, "")).join(", ");
+    return { source: "BnF", titre, editeur, annee, auteurs, isbn, cover: null };
+  }).filter((c) => c.titre);
+}
+// Couverture d'un ISBN : Google Books (si la clé est là), sinon l'image Open Library par ISBN (vérifiée à l'affichage).
+async function coverByIsbn(isbn) {
+  if (gbKey()) {
+    const hit = (await googleBooks(`isbn:${isbn}`, 1).catch(() => []))[0];
+    if (hit?.cover) return hit.cover;
+  }
+  return `https://covers.openlibrary.org/b/isbn/${isbn}-M.jpg?default=false`;
+}
 function rank(c, name, num, editeur) {
   let sc = similarity(name, c.titre) * 3;
   if (num != null && new RegExp(`(^|\\D)0*${num}(\\D|$)`).test(c.titre)) sc += 1.5;
   if (editeur && norm(c.editeur).includes(norm(editeur).split(" ")[0])) sc += 0.6;
   if (c.cover) sc += 0.4;
+  if (c.isbn) sc += 0.2;
   return sc;
 }
 async function searchBases(name, num, editeur, max = 6, query) {
   const q = query || (num != null ? `${name} ${num}` : name);
   const olq = num != null ? `${name} ${num}` : name; // la syntaxe intitle:/inpublisher: n'existe que chez Google
-  const res = await Promise.allSettled([googleBooks(q, 8), openLibrary(olq, 6)]);
-  if (res.every((r) => r.status === "rejected")) throw new Error("offline");
+  lastSearchError = "";
+  const res = await Promise.allSettled([googleBooks(q, 8), bnf(name, num, editeur, 8), openLibrary(olq, 6)]);
+  if (res.every((r) => r.status === "rejected")) { if (!lastSearchError) lastSearchError = navigator.onLine ? "bases" : "offline"; throw new Error(lastSearchError); }
   const all = res.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   const seen = new Set();
-  return all.filter((c) => { const k = c.isbn || norm(c.titre + c.editeur); if (seen.has(k)) return false; seen.add(k); return true; })
+  const ranked = all.filter((c) => { const k = c.isbn || norm(c.titre + c.editeur); if (seen.has(k)) return false; seen.add(k); return true; })
     .map((c) => ({ ...c, score: rank(c, name, num, editeur) })).sort((a, b) => b.score - a.score).slice(0, max);
+  // Les meilleures fiches BnF n'ont pas d'image : on la cherche par ISBN.
+  await Promise.all(ranked.slice(0, 3).filter((c) => !c.cover && c.isbn).map(async (c) => { c.cover = await coverByIsbn(c.isbn); c.score += 0.4; }));
+  return ranked.sort((a, b) => b.score - a.score);
 }
 
 // ---------- rendu ----------
@@ -219,7 +274,7 @@ let filterM = "Tout", filterC = "Tout";
 
 function chips(el, current, onPick) {
   el.innerHTML = ["Tout", ...GENRES.map((g) => g.id)].map((g) =>
-    `<button class="chip" data-g="${esc(g)}" aria-pressed="${g === current}">${g === "Tout" ? "" : `<svg class="ico"><use href="#${genreIcon(g)}"/></svg>`}${esc(g)}</button>`).join("");
+    `<button type="button" class="chip" data-g="${esc(g)}" aria-pressed="${g === current}">${g === "Tout" ? "" : `<svg class="ico"><use href="#${genreIcon(g)}"/></svg>`}${esc(g)}</button>`).join("");
   el.onclick = (e) => { const b = e.target.closest(".chip"); if (b) onPick(b.dataset.g); };
 }
 function serieRow(s, extra, count) {
@@ -228,7 +283,7 @@ function serieRow(s, extra, count) {
     <span class="meta"><span class="name">${esc(s.titre)}</span>
       <span class="sub">${esc([s.editeur, s.collection].filter(Boolean).join(" · "))}${s.aConfirmer ? ` <span class="flag">· à confirmer</span>` : ""}</span>
       ${extra || ""}</span>
-    <span class="count">${esc(count ?? (s.possedes || []).length)}</span></button>`;
+    <span class="count">${esc(count ?? `${(s.possedes || []).length} vol.`)}</span></button>`;
 }
 function hydrateCovers(root) {
   root.querySelectorAll("[data-cover]").forEach((el) => {
@@ -240,9 +295,11 @@ const sortFr = (a, b) => a.titre.localeCompare(b.titre, "fr", { sensitivity: "ba
 
 let sortM = "az";
 function renderManques() {
+  const empty = !db.series.length;
+  $("#welcome").hidden = !empty; $("#v-manques").classList.toggle("is-empty", empty);
   chips($("#chips-manques"), filterM, (g) => { filterM = g; renderManques(); });
   $("#sort-manques").innerHTML = [["az", "A à Z"], ["near", "Presque complètes"]].map(([k, l]) =>
-    `<button class="chip" data-sort="${k}" aria-pressed="${k === sortM}">${l}</button>`).join("");
+    `<button type="button" class="chip" data-sort="${k}" aria-pressed="${k === sortM}">${l}</button>`).join("");
   // Pendant une recherche « Est-ce que je l'ai ? », la liste ne garde que les séries concernées.
   const q = $("#q").value.trim();
   const hits = q ? new Set(bestSeries(parseLine(q)?.name || q, 8).map((r) => r.s.id)) : null;
@@ -258,20 +315,21 @@ function renderManques() {
     return serieRow(s, `<span class="gaps-txt">Il manque ${s.type === "fascicule" ? "n° " : ""}${esc(ranges(miss))}</span>`,
       `${numeric(s.possedes).length}/${total}`);
   }).join("")
-    : `<p class="empty">${db.series.length ? "Aucun trou dans tes séries pour ce filtre." : "Ta collection est vide. Va dans Réglages pour importer ton fichier."}</p>`;
+    : `<p class="empty">${hits ? "Aucun manque dans les séries qui correspondent à ta recherche." : "Aucun trou dans tes séries pour ce filtre."}</p>`;
   hydrateCovers($("#v-manques"));
 }
 
 function renderAnswer() {
   const q = $("#q").value.trim(); const box = $("#answer");
-  if (!q) { box.hidden = true; return; }
+  if (!q) { box.hidden = true; $("#q-clear").hidden = true; return; }
   const p = parseLine(q);
   // Toutes les séries qui ressemblent autant que la meilleure (« Conan 12 » -> Super Conan, Conan Lug, Cimmérien…)
   // avec un numéro, on ignore les intégrales et les livres isolés (« Nos années Strange » pour « Strange 74 »)
   const all = bestSeries(p.name, 10).filter((r) => p.num == null || (!["integrale", "livre", "roman"].includes(r.s.type) && numeric(r.s.possedes).length));
   const found = all.filter((r) => r.score >= all[0]?.score - 0.12).slice(0, 6);
   box.hidden = false;
-  const addUnknown = `<button class="btn primary" data-addnew="${esc(q)}">Je l'achète : l'ajouter</button>`;
+  $("#q-clear").hidden = false;
+  const addUnknown = `<button type="button" class="btn primary" data-addnew="${esc(q)}">Je l'achète : l'ajouter</button>`;
   if (!found.length) {
     box.innerHTML = `<span class="verdict big miss">NON</span><span class="hint">Tu n'as aucune série qui ressemble à « ${esc(p.name)} ».</span>
       <div class="row wrap-row">${addUnknown}</div>`;
@@ -285,14 +343,16 @@ function renderAnswer() {
     }).join("");
     return;
   }
-  box.innerHTML = found.map(({ s }) => {
-    const ok = has(s, p.num);
-    return `<div class="verdict-row ${ok ? "have" : "miss"}">
+  // Les OUI d'abord ; « + Acheté » reste discret pour éviter un ajout par erreur de doigt.
+  const rows = found.map(({ s }) => ({ s, ok: has(s, p.num) })).sort((a, b) => b.ok - a.ok);
+  const nOk = rows.filter((r) => r.ok).length;
+  box.innerHTML = (rows.length > 1 ? `<span class="v-sum">Tu l'as dans ${nOk} série${nOk > 1 ? "s" : ""} sur ${rows.length}</span>` : "") +
+    rows.map(({ s, ok }) => `<div class="verdict-row ${ok ? "have" : "miss"}">
       <span class="v-big">${ok ? "OUI" : "NON"}</span>
-      <button class="v-name" data-open="${esc(s.id)}">${esc(s.titre)} · ${esc(numLabel(s, p.num))}</button>
-      ${ok ? "" : `<button class="btn primary" data-addnow="${esc(s.id)}" data-num="${esc(p.num)}">Je l'achète</button>`}
-    </div>`;
-  }).join("") + `<div class="row wrap-row"><span class="hint">Pas la bonne série ?</span>${addUnknown.replace("btn primary", "btn")}</div>`;
+      <button type="button" class="v-name" data-open="${esc(s.id)}">${esc(s.titre)} · ${esc(numLabel(s, p.num))}</button>
+      ${ok ? "" : `<button type="button" class="btn small" data-addnow="${esc(s.id)}" data-num="${esc(p.num)}">+ Acheté</button>`}
+    </div>`).join("") +
+    `<button type="button" class="linkish" data-addnew="${esc(q)}">C'est une autre série : l'ajouter</button>`;
 }
 
 function renderCollection() {
@@ -326,7 +386,7 @@ function detailList(s) {
   }).join("");
   return rows ? `<details class="details"${keys.length <= 20 ? " open" : ""}><summary>Titres et éditions</summary><ul class="dlist">${rows}</ul></details>` : "";
 }
-let wishMode = false;
+let wishMode = false, editOpen = false;
 function openSerie(id) {
   const s = db.series.find((x) => x.id === id); if (!s) return;
   const dlg = $("#detail");
@@ -335,38 +395,47 @@ function openSerie(id) {
   const max = Math.max(s.parus || 0, ...nums, ...[...wish].filter((x) => /^\d+$/.test(x)).map(Number), 0);
   const start = nums.includes(0) ? 0 : 1;
   const grid = [];
-  for (let i = start; i <= max + 1; i++) {
-    const st = has(s, i) ? "have" : wish.has(String(i)) ? "wish" : i <= max ? "miss" : "";
+  for (let i = start; i <= max; i++) {
+    const st = has(s, i) ? "have" : wish.has(String(i)) ? "wish" : "miss";
     const titre = s.titres?.[i] ? ` – ${s.titres[i]}` : "";
-    grid.push(`<button class="tome ${st}" data-n="${i}" title="Tome ${i}${esc(titre)}" aria-label="Tome ${i}${esc(titre)} : ${st === "have" ? "possédé" : st === "wish" ? "souhaité" : "manquant"}">${i}</button>`);
+    grid.push(`<button type="button" class="tome ${st}" data-n="${i}" title="Tome ${i}${esc(titre)}" aria-label="${esc(numLabel(s, i))}${esc(titre)} : ${st === "have" ? "je l'ai" : st === "wish" ? "souhaité" : "manquant"}">${i}</button>`);
   }
+  grid.push(`<button type="button" class="tome next" data-n="${max + 1}" aria-label="J'ai aussi le ${esc(numLabel(s, max + 1))}">+</button>`);
   const others = (s.possedes || []).filter((x) => !/^\d+$/.test(String(x)));
   dlg.innerHTML = `<div class="sheet-inner">
-    <div class="row"><h2>${esc(s.titre)}</h2><button class="btn small" data-close>Fermer</button></div>
+    <div class="grab" aria-hidden="true"></div>
+    <h2>${esc(s.titre)}</h2>
     <div class="row" style="justify-content:flex-start;align-items:flex-start">
       <span class="cover" data-cover="${esc(s.id)}" style="width:72px;height:98px"></span>
       <div class="meta"><div>${esc(s.auteurs || "")}</div><div class="hint">${esc([s.editeur, s.collection].filter(Boolean).join(" · "))}</div>
       ${s.note ? `<div class="hint">${esc(s.note)}</div>` : ""}</div></div>
-    ${s.type !== "integrale" ? `<div class="row wrap-row legend"><span>${wishMode ? "Touche un numéro pour le mettre ou l'enlever de tes souhaits." : "Touche un numéro : je l'ai / je ne l'ai pas."}</span>
-      <button class="btn small${wishMode ? " primary" : ""}" data-wishmode aria-pressed="${wishMode}"><svg class="ico"><use href="#i-star"/></svg>Souhaits</button></div>
+    ${s.type !== "integrale" ? `<div class="legend"><span class="lg have">Je l'ai</span><span class="lg miss">Manque</span><span class="lg wish">Souhait</span><span class="lg next">+ tome suivant</span></div>
+    <div class="row wrap-row"><span class="hint">${wishMode ? "Touche un numéro pour le mettre ou l'enlever de tes souhaits." : "Touche un numéro : je l'ai / je ne l'ai pas."}</span>
+      <button type="button" class="btn small${wishMode ? " primary" : ""}" data-wishmode aria-pressed="${wishMode}"><svg class="ico"><use href="#i-star"/></svg>Souhaits</button></div>
     <div class="tomes">${grid.join("")}</div>` : ""}
     ${others.length ? `<div><div class="hint">Autres volumes</div><div class="extra">${others.map((o) => `<span class="tome have">${esc(o)}</span>`).join("")}</div></div>` : ""}
     ${detailList(s)}
+    <details class="edit"${editOpen ? " open" : ""}><summary>Modifier la série</summary>
     <div class="grid2">
       <label class="field">Tomes parus (pour voir les manques au-delà)<input id="f-parus" type="number" min="0" inputmode="numeric" value="${esc(s.parus || "")}"></label>
       <label class="field">Éditeur<input id="f-editeur" value="${esc(s.editeur)}"></label>
       <label class="field">Collection<input id="f-collection" value="${esc(s.collection)}"></label>
       <label class="field">Genre<select id="f-genre" class="field-select">${GENRES.map((g) => `<option${g.id === s.genre ? " selected" : ""}>${g.id}</option>`).join("")}</select></label>
     </div>
+    <p class="hint">Les changements sont enregistrés dès que tu quittes le champ.</p>
     <div class="row wrap-row">
-      <button class="btn primary" data-savemeta>Enregistrer</button>
-      <button class="btn" data-recover>Chercher une couverture</button>
+      <button type="button" class="btn" data-recover>Chercher une couverture</button>
       <label class="btn">Photographier la couverture<input id="f-photo" type="file" accept="image/*" capture="environment" hidden></label>
-      <button class="btn danger" data-del>Supprimer la série</button>
     </div>
-    <div class="row" data-delconfirm hidden><span>Supprimer « ${esc(s.titre)} » ?</span><button class="btn danger small" data-delyes>Oui</button><button class="btn small" data-delno>Non</button></div>
     <div data-covers></div>
+    <div class="danger-zone">
+      <button type="button" class="btn danger" data-del>Supprimer la série</button>
+      <div class="row wrap-row" data-delconfirm hidden><span>Supprimer « ${esc(s.titre)} » ?</span><button type="button" class="btn danger small" data-delyes>Oui</button><button type="button" class="btn small" data-delno>Non</button></div>
+    </div>
+    </details>
+    <div class="sheet-bar"><button type="button" class="btn wide" data-close>Fermer</button></div>
   </div>`;
+  dlg.querySelector("details.edit").addEventListener("toggle", (e) => (editOpen = e.target.open));
   hydrateCovers(dlg);
   // Chaque champ est enregistré dès qu'on le quitte : rien ne se perd si on touche un tome ensuite.
   const meta = () => {
@@ -374,7 +443,7 @@ function openSerie(id) {
     s.collection = $("#f-collection").value.trim(); s.genre = $("#f-genre").value; save(KEY, db); renderAll();
   };
   dlg.querySelectorAll("#f-parus, #f-editeur, #f-collection, #f-genre").forEach((el) => (el.onchange = meta));
-  dlg.onclose = () => { wishMode = false; };
+  dlg.onclose = () => { wishMode = false; editOpen = false; };
   dlg.querySelector("#f-photo").onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return;
     try { s.cover = await shrink(f); persist(); toast("Couverture enregistrée"); openSerie(s.id); }
@@ -401,7 +470,6 @@ function openSerie(id) {
         () => { Object.assign(s, before); persist(); if (dlg.open) openSerie(s.id); });
     }
     if (t.closest("[data-wishmode]")) { wishMode = !wishMode; return openSerie(s.id); }
-    if (t.closest("[data-savemeta]")) { meta(); toast("Enregistré"); return openSerie(s.id); }
     if (t.closest("[data-del]")) { dlg.querySelector("[data-delconfirm]").hidden = false; return; }
     if (t.closest("[data-delno]")) { dlg.querySelector("[data-delconfirm]").hidden = true; return; }
     if (t.closest("[data-delyes]")) { db.series = db.series.filter((x) => x.id !== s.id); persist(); dlg.close(); return toast("Série supprimée"); }
@@ -410,11 +478,12 @@ function openSerie(id) {
       try {
         const cands = (await searchBases(s.titre, numeric(s.possedes)[0] ?? null, s.editeur, 10)).filter((c) => c.cover);
         box.innerHTML = cands.length ? `<div class="cands">${cands.map((c, i) => candHtml(c, i)).join("")}</div>` : `<p class="hint">Aucune couverture trouvée.</p>`;
+        fixImgs(box);
         box.querySelector(".cands")?.addEventListener("click", (ev) => {
           const b = ev.target.closest(".cand"); if (!b) return;
           s.cover = cands[Number(b.dataset.i)].cover; persist(); openSerie(s.id);
         });
-      } catch { box.innerHTML = `<p class="hint">Pas de connexion : réessaie plus tard.</p>`; }
+      } catch { box.innerHTML = `<p class="hint">${esc(searchErrorText())}</p>`; }
     }
   };
   if (!dlg.open) dlg.showModal();
@@ -439,8 +508,19 @@ function sortTomes(arr) {
 }
 
 // ---------- ajout ----------
+// Message clair selon la panne : pas de réseau, quota Google, ou bases muettes.
+function searchErrorText() {
+  if (lastSearchError === "offline" || !navigator.onLine) return "Pas de réseau pour l'instant. Réessaie quand tu en auras.";
+  if (lastSearchError === "quota-nokey") return "Google Books a atteint son quota du jour. Ajoute ta clé gratuite dans Réglages > Couvertures.";
+  if (lastSearchError === "quota") return "Ta clé Google Books a atteint son quota du jour. Réessaie demain.";
+  return "Les bases n'ont pas répondu. Réessaie dans un moment.";
+}
+// Une image qui ne charge pas (couverture absente chez Open Library…) laisse place au picto.
+function fixImgs(root) {
+  root.querySelectorAll(".cimg img").forEach((img) => (img.onerror = () => { img.parentElement.innerHTML = `<svg class="ico"><use href="#i-book"/></svg>`; }));
+}
 function candHtml(c, i) {
-  return `<button class="cand${i === 0 ? " best" : ""}" data-i="${i}">
+  return `<button type="button" class="cand${i === 0 ? " best" : ""}" data-i="${i}">
     ${i === 0 ? `<span class="badge">Meilleure</span>` : ""}
     <span class="cimg">${safeImg(c.cover) ? `<img src="${esc(c.cover)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<svg class="ico"><use href="#i-book"/></svg>`}</span>
     <span class="t">${esc(c.titre || "Sans titre")}</span>
@@ -492,22 +572,30 @@ async function runSearch() {
       if (t && p.num != null && has(t, p.num) && !wish) block.querySelector(".target").insertAdjacentHTML("afterend", `<p class="done" data-dup>Tu l'as déjà.</p>`);
     };
     if (tsel) { tsel.onchange = checkDup; checkDup(); }
+    block.querySelector(".hint").remove();
+    const wrap = document.createElement("div"); block.append(wrap);
     let cands = [];
-    try { cands = await searchBases(p.name, p.num, sure?.editeur, 6); } // toujours avec le texte saisi
-    catch { cands = []; }
-    const hint = block.querySelector(".hint"); if (hint) hint.remove();
-    const wrap = document.createElement("div");
-    wrap.innerHTML = `${cands.length ? `<p class="hint">Choisis la bonne édition (la première est la plus probable) :</p><div class="cands">${cands.map((c, i) => candHtml(c, i)).join("")}</div>` : `<p class="hint">Rien trouvé dans les bases (ou pas de réseau).</p>`}
-      <div class="row wrap-row"><button class="btn small" data-plain>Ajouter sans édition précise</button></div>`;
-    block.append(wrap);
+    const look = async () => {
+      wrap.innerHTML = `<p class="hint">Recherche dans les bases…</p><div class="cands" aria-busy="true">${'<span class="cand skel"></span>'.repeat(3)}</div>`;
+      let err = "";
+      try { cands = await searchBases(p.name, p.num, sure?.editeur, 6); } // toujours avec le texte saisi
+      catch { cands = []; err = searchErrorText(); }
+      wrap.innerHTML = `${cands.length ? `<p class="hint">Choisis la bonne édition (la première est la plus probable) :</p><div class="cands">${cands.map((c, i) => candHtml(c, i)).join("")}</div>`
+        : err ? `<p class="warn">${esc(err)}</p>` : `<p class="hint">Aucune édition trouvée dans les bases. Tu peux l'ajouter quand même.</p>`}
+        <div class="row wrap-row">${err ? `<button type="button" class="btn small" data-retry>Réessayer</button>` : ""}<button type="button" class="btn small" data-plain>Ajouter sans édition précise</button></div>`;
+      fixImgs(wrap);
+    };
+    await look();
     const done = (s) => { wrap.innerHTML = `<p class="done">${wish ? "Ajouté aux souhaits" : "Ajouté"} : ${esc(s.titre)}${p.num != null ? ` ${esc(numLabel(s, p.num))}` : ""}</p>`; };
     wrap.onclick = (e) => {
-      const b = e.target.closest(".cand"); const plain = e.target.closest("[data-plain]");
+      if (e.target.closest("[data-retry]")) return look();
+      const b = e.target.closest(".cand:not(.skel)"); const plain = e.target.closest("[data-plain]");
       if (!b && !plain) return;
       const genre = block.querySelector("[data-genre]")?.value;
       if (tsel) tsel.disabled = true;
       done(addVolume({ serieId: tsel?.value || null, newName: p.name, genre, num: p.num, cand: b ? cands[Number(b.dataset.i)] : null, wish }));
     };
+    await new Promise((r) => setTimeout(r, 400)); // une ligne après l'autre, pour ménager les quotas des bases
   }
 }
 
@@ -619,6 +707,7 @@ $("#imp").addEventListener("change", async (e) => {
   try {
     const r = mergeImport(JSON.parse(await f.text()));
     $("#imp-msg").textContent = `Import terminé : ${r.added} séries ajoutées, ${r.replaced} mises à jour.`;
+    toast(`Import terminé : ${db.series.length} séries dans ta collection.`);
   } catch { $("#imp-msg").textContent = "Ce fichier n'est pas une collection valide."; }
   e.target.value = "";
 });
@@ -641,7 +730,7 @@ $("#wipe-yes").addEventListener("click", () => { db = { version: 1, series: [] }
 const VIEWS = ["manques", "collection", "ajouter", "reglages"];
 function show(v) {
   document.querySelectorAll(".view").forEach((s) => (s.hidden = s.id !== "v-" + v));
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("on", t.dataset.v === v));
+  document.querySelectorAll(".tab").forEach((t) => { t.classList.toggle("on", t.dataset.v === v); if (t.dataset.v === v) t.setAttribute("aria-current", "page"); else t.removeAttribute("aria-current"); });
   if (location.hash !== "#" + v) history.pushState(null, "", "#" + v); // le bouton retour d'Android revient à l'écran précédent
   window.scrollTo(0, 0);
 }
@@ -654,12 +743,29 @@ $("#main").addEventListener("click", (e) => {
     const s = addVolume({ serieId: add.dataset.addnow, num });
     return toast(`Ajouté : ${s.titre} ${numLabel(s, num)}`, () => { removeVolume(s, num); });
   }
+  const go = e.target.closest("[data-go]");
+  if (go) return show(go.dataset.go);
   const addNew = e.target.closest("[data-addnew]");
   if (addNew) { $("#saisie").value = addNew.dataset.addnew; $("#as-wish").checked = false; show("ajouter"); return runSearch(); }
   const open = e.target.closest("[data-open], .serie");
   if (open) openSerie(open.dataset.open || open.dataset.id);
 });
 $("#q").addEventListener("input", () => { renderAnswer(); renderManques(); });
+$("#q-clear").addEventListener("click", () => { $("#q").value = ""; renderAnswer(); renderManques(); $("#q").focus(); });
+// clé Google Books
+$("#gbkey").value = gbKey();
+$("#gbkey-save").addEventListener("click", async () => {
+  const k = $("#gbkey").value.trim(); const msg = $("#gbkey-msg");
+  try { if (k) localStorage.setItem(GB_KEY, k); else localStorage.removeItem(GB_KEY); } catch { msg.textContent = "Impossible d'enregistrer sur cet appareil."; return; }
+  if (!k) { msg.textContent = "Clé retirée."; return; }
+  msg.textContent = "Vérification…"; gbPausedUntil = 0;
+  try {
+    const r = await fetch(`https://www.googleapis.com/books/v1/volumes?q=lanfeust&maxResults=1&key=${encodeURIComponent(k)}`);
+    msg.textContent = r.ok ? "Clé enregistrée et vérifiée." : r.status === 400 ? "Clé refusée : vérifie qu'elle est bien copiée." :
+      r.status === 403 ? "Clé refusée : active « Books API » et vérifie les restrictions." : `Clé enregistrée (réponse ${r.status}).`;
+    if (r.ok) { for (const id in covers) if (String(covers[id]).startsWith("none")) delete covers[id]; save(COVERS_KEY, covers); renderAll(); }
+  } catch { msg.textContent = "Clé enregistrée. Pas de réseau pour la vérifier."; }
+});
 $("#qc").addEventListener("input", renderCollection);
 $("#sort-manques").addEventListener("click", (e) => { const b = e.target.closest("[data-sort]"); if (b) { sortM = b.dataset.sort; renderManques(); } });
 $("#go").addEventListener("click", runSearch);
@@ -678,7 +784,7 @@ function toast(msg, undo) {
 }
 
 const start = (location.hash || "").slice(1);
-const first = VIEWS.includes(start) ? start : db.series.length ? "manques" : "reglages";
+const first = VIEWS.includes(start) ? start : "manques";
 history.replaceState(null, "", "#" + first); show(first);
 renderAll();
 
